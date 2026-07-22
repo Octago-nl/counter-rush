@@ -1,0 +1,13 @@
+{
+  "slots": {
+    "cabinet_banner":   { "on": true,  "network": "house", "variant": "A" },
+    "interstitial":     { "on": false, "cap_per_session": 1, "min_play_s": 30 },
+    "rewarded_video":   { "on": false, "reward": "tips:50" },
+    "affiliate_rail":   { "on": false, "offers": [] },
+    "insert_coin_jar":  { "on": true,  "provider": "ko-fi", "sku": "tip" },
+    "arcade_pass_gate": { "on": true,  "perks": ["adfree", "sync", "tickets"] }
+  },
+  "experiment": { "id": null, "variant": "A", "split": 0.5 },
+  "engine_channel": "stable",
+  "_note": "Seeded from the counter-rush genome monetization_slots. CRO mutates this live via run-experiment (Tier-2) — never a rebuild. Money slots default sane; ad networks/processors are Tier-3 (Operator)."
+}

@@ -1,0 +1,13 @@
+{
+  "slug": "counter-rush",
+  "mechanic": "multi-lane serve-and-dispatch time-manager — work a counter of parallel lanes, sliding filled orders down a lane to slake advancing patrons who push back toward you, then catching the empties they return before they smash on the floor; patrons queue faster and walk quicker as the shift ramps; serve out a whole rush to clear the round and grab a tip-token for a brief slow-motion burst — but let a patron reach your end, or miss a returning empty, and you burn one of three lives",
+  "theme": "synthwave neon bar — a glowing barkeep skates a chrome counter of magenta lanes, sliding luminous tumblers at cyan patron-silhouettes under VHS bloom and a pulsing marquee",
+  "juice_pack": "slide-clink",
+  "difficulty_curve": "gentle→spike",
+  "monetization_slots": ["cabinet_banner", "insert_coin_jar", "arcade_pass_gate"],
+  "seo_target": "lane serving time management game unblocked",
+  "art_shader": "counter-neon-v1",
+  "parents": [],
+  "engine_version": "engine.current",
+  "created_confidence": "pre-traffic"
+}

@@ -167,6 +167,8 @@
   var BAR_X = 56;                 // counter edge — orders launch from here, empties must reach here
   var SPAWN_X = W - 26;           // patrons walk in from here
   var CATCH_ZONE = 48;            // px window past the counter edge where CATCH succeeds
+  var WARN_ZONE = 96;             // px window before the counter edge where an approaching
+                                   // patron gets the same kind of pulse hint the empties get
 
   function laneCenterY(i) { return TOP_MARGIN + i * LANE_H + LANE_H / 2; }
 
@@ -258,7 +260,8 @@
 
   function laneMove(delta) {
     if (!S || S.mode !== "play") return;
-    S.selected = clamp(S.selected + delta, 0, LANES - 1);
+    var r = S.laneRange || { lo: 0, hi: LANES - 1 };
+    S.selected = clamp(S.selected + delta, r.lo, r.hi);
   }
 
   /* ---- state ------------------------------------------------------------------------------ */
@@ -269,23 +272,41 @@
   function newLane() { return { patrons: [], orders: [], spawnT: rand(0.6, 1.4) }; }
 
   function difficultyFor(level) {
+    // Levels 1-2 are the onboarding ramp: wider spawn gaps so a first-timer only ever
+    // juggles a couple of patrons at once. From level 3 on we fall back to the original
+    // (tighter) curve — this is where the genome's "gentle -> spike" shift happens.
+    var gentle = level <= 2;
     return {
-      spawnMin: Math.max(0.85, 2.5 - 0.14 * level),
-      spawnMax: Math.max(1.5, 4.0 - 0.18 * level),
+      spawnMin: gentle ? Math.max(1.3, 3.2 - 0.14 * level) : Math.max(0.85, 2.5 - 0.14 * level),
+      spawnMax: gentle ? Math.max(2.2, 5.0 - 0.18 * level) : Math.max(1.5, 4.0 - 0.18 * level),
       maxQueue: level >= 8 ? 3 : (level >= 3 ? 2 : 1),
       pSpeed: Math.min(150, 40 + level * 7),
       dSpeed: Math.min(340, 210 + level * 6),
       eSpeed: Math.min(360, 225 + level * 6)
     };
   }
-  function rushTargetFor(level) { return 8 + level * 3; }
+  // Gentle -> spike: levels 1-4 ramp softly (5, 7, 9, 12) so a first-timer reliably tastes
+  // the rush-clear reward inside ~15s; level 5 is where the shift genuinely turns into a rush
+  // and the original (steeper) curve takes back over.
+  function rushTargetFor(level) {
+    if (level === 1) return 5;
+    if (level === 2) return 7;
+    if (level === 3) return 9;
+    if (level === 4) return 12;
+    return 8 + level * 3;
+  }
+  // Onboarding: only the two middle lanes are "open" for serving on levels 1-2 (fewer
+  // simultaneous demands on a first-timer); all four lanes open from level 3 on.
+  function activeLaneRangeFor(level) { return level <= 2 ? { lo: 1, hi: 2 } : { lo: 0, hi: LANES - 1 }; }
 
   function startGame() {
     S = {
       mode: "play", score: 0, level: 1, lives: 3, combo: 1,
       selected: 1, rushServed: 0, rushTarget: rushTargetFor(1),
       lanes: [newLane(), newLane(), newLane(), newLane()],
-      slowmo: 0, clearT: 0, startTs: Date.now(), last: performance.now(), __injectErr: false
+      laneRange: activeLaneRangeFor(1),
+      slowmo: 0, clearT: 0, comboFlashT: 0, comboFlashN: 0,
+      startTs: Date.now(), last: performance.now(), __injectErr: false
     };
     els.overlay.classList.add("hide");
     els.shareWrap.style.display = "none";
@@ -305,22 +326,39 @@
     return pts;
   }
 
-  function spawnShards(x, y, color, n) {
+  // Bump the combo counter and, every 3rd step, fire an on-screen callout + extra shake/
+  // particles so a growing combo actually READS as an escalating payoff (previously the
+  // only feedback was a HUD number nobody had time to glance at).
+  function comboBump(x, y) {
+    S.combo++;
+    if (S.combo >= 3 && S.combo % 3 === 0) {
+      S.comboFlashT = 0.9;
+      S.comboFlashN = S.combo;
+      shake = Math.max(shake, Math.min(1, 0.35 + S.combo * 0.03));
+      spawnShards(x, y, "#ffd23f", 12, true);
+    }
+  }
+
+  // `big` (optional) scales up spread/size/life for milestone moments (rush-clear, combo
+  // callouts) so those payoffs read as noticeably bigger than a routine serve/catch tick.
+  function spawnShards(x, y, color, n, big) {
     if (reduce) return;
+    var spread = big ? 340 : 220, life = big ? 1.6 : 1.15, size = big ? 3 : 2.5;
     for (var i = 0; i < n; i++) {
       particles.push({
-        x: x, y: y, vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200 - 30,
-        t: 1, color: color, s: 2 + Math.random() * 3
+        x: x, y: y, vx: (Math.random() - 0.5) * spread, vy: (Math.random() - 0.5) * spread - 40,
+        t: life, life: life, color: color, s: size + Math.random() * (big ? 5 : 3.5)
       });
     }
   }
   function updateParticles(dt) {
     for (var i = particles.length - 1; i >= 0; i--) {
       var p = particles[i];
-      p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt; p.t -= dt * 1.6;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt; p.t -= dt * (1.6 / (p.life || 1));
       if (p.t <= 0) particles.splice(i, 1);
     }
     if (shake > 0) shake = Math.max(0, shake - dt * 3.2);
+    if (S && S.comboFlashT > 0) S.comboFlashT = Math.max(0, S.comboFlashT - dt);
   }
 
   /* ---- lane simulation ---------------------------------------------------------------------
@@ -331,9 +369,11 @@
    * peels off; CATCH claims an empty inside the counter-edge window before it smashes.
    */
   function updateLane(lane, li, dt, diff) {
-    // spawn (frozen once the rush quota is met, so the round can actually drain and clear)
+    // spawn (frozen once the rush quota is met, so the round can actually drain and clear;
+    // also frozen on lanes closed by the onboarding ramp — see activeLaneRangeFor)
+    var laneOpen = !S.laneRange || (li >= S.laneRange.lo && li <= S.laneRange.hi);
     lane.spawnT -= dt;
-    if (lane.spawnT <= 0 && lane.patrons.length < diff.maxQueue && S.rushServed < S.rushTarget) {
+    if (laneOpen && lane.spawnT <= 0 && lane.patrons.length < diff.maxQueue && S.rushServed < S.rushTarget) {
       lane.patrons.push({ x: SPAWN_X, speed: diff.pSpeed, state: "walk" });
       lane.spawnT = rand(diff.spawnMin, diff.spawnMax);
     }
@@ -370,7 +410,7 @@
           o.dir = -1; o.x = hitP.x;
           S.rushServed++;
           addScore(10);
-          S.combo++;
+          comboBump(o.x, laneCenterY(li));
           spawnShards(o.x, laneCenterY(li), "#20e6ff", 8);
           Sound.play("serve");
           emit("quest_progress", S.rushServed, "count", { quest: "rush", target: S.rushTarget, level: S.level });
@@ -431,7 +471,7 @@
     if (target) {
       lane.orders.splice(lane.orders.indexOf(target), 1);
       addScore(15);
-      S.combo++;
+      comboBump(BAR_X, laneCenterY(S.selected));
       Sound.play("clink");
       spawnShards(BAR_X, laneCenterY(S.selected), "#20e6ff", 8);
       hud();
@@ -465,7 +505,8 @@
       var bonus = 100 + S.level * 15;
       S.score += bonus;
       S.slowmo = reduce ? 0 : 1.2;
-      shake = Math.max(shake, 0.6);
+      shake = Math.max(shake, 0.85);
+      for (var li = 0; li < LANES; li++) spawnShards(BAR_X + 40, laneCenterY(li), "#ffd23f", 10, true);
       Sound.play("rushclear");
       emit("tip", bonus, "count", { level: S.level });
       emit("xp_earn", 10 + S.level, "count", {});
@@ -479,10 +520,17 @@
     S.rushServed = 0;
     S.rushTarget = rushTargetFor(S.level);
     S.lanes = [newLane(), newLane(), newLane(), newLane()];
+    var prevRange = S.laneRange;
+    S.laneRange = activeLaneRangeFor(S.level);
+    S.selected = clamp(S.selected, S.laneRange.lo, S.laneRange.hi);
     S.mode = "play"; S.slowmo = 0;
     emit("level", S.level, "count", {});
     hud();
-    announce("Level " + S.level + ".");
+    if (prevRange && (prevRange.lo !== S.laneRange.lo || prevRange.hi !== S.laneRange.hi)) {
+      announce("Level " + S.level + ". All lanes open!");
+    } else {
+      announce("Level " + S.level + ".");
+    }
   }
 
   function endGame(won) {
@@ -531,14 +579,28 @@
 
   /* ---- drawing ------------------------------------------------------------------------------ */
   var tPulse = 0;
-  function drawBackdrop() {
+  // Per-level visual escalation (fix #4): 0 at level 1, 1 at level 10+. Sells the genome's
+  // "gentle -> spike" curve visually — marquee/backdrop run hotter as the shift intensifies.
+  function levelIntensity(level) { return clamp(((level || 1) - 1) / 9, 0, 1); }
+  function drawBackdrop(level) {
+    var heat = levelIntensity(level);
     ctx.fillStyle = "#070225";
     ctx.fillRect(0, 0, W, H);
+    // a faint hot underlay that grows with level so the room itself reads "spikier" later
+    if (heat > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.10 + heat * 0.22;
+      var hg = ctx.createRadialGradient(W / 2, H * 0.3, 20, W / 2, H * 0.3, H * 0.75);
+      hg.addColorStop(0, "#ff2f5e"); hg.addColorStop(1, "rgba(255,47,94,0)");
+      ctx.fillStyle = hg;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
     // marquee glow
-    var glow = 0.55 + 0.35 * Math.sin(tPulse * 2.2);
+    var glow = 0.55 + 0.35 * Math.sin(tPulse * (2.2 + heat * 2.4));
     ctx.save();
     ctx.textAlign = "center"; ctx.font = "bold 22px Chakra Petch, monospace";
-    ctx.shadowColor = "#ff2fb9"; ctx.shadowBlur = 18 * glow;
+    ctx.shadowColor = heat > 0.55 ? "#ff5a2f" : "#ff2fb9"; ctx.shadowBlur = (18 + heat * 14) * glow;
     ctx.fillStyle = "#ffe9fb";
     ctx.fillText("◆ COUNTER RUSH ◆", W / 2, 40);
     ctx.restore();
@@ -559,6 +621,25 @@
     }
   }
 
+  // Ambient motion (fix #3): lanes otherwise sit visually dead for most of a patron's walk
+  // (interactions cluster near the far-right spawn edge). These are purely decorative drifting
+  // motes spanning the FULL lane depth — deterministic from tPulse, no state, no gameplay effect.
+  function drawLaneAmbient(y, li) {
+    if (reduce) return;
+    ctx.save();
+    for (var k = 0; k < 3; k++) {
+      var speed = 26 + k * 14;
+      var span = SPAWN_X - BAR_X;
+      var phase = (tPulse * speed + li * 71 + k * 133) % span;
+      var x = SPAWN_X - phase;
+      var a = 0.10 + 0.10 * Math.sin(tPulse * 3 + k + li);
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.fillStyle = "#8f86c9";
+      ctx.fillRect(x - 1, y - LANE_H / 2 + 10 + k * (LANE_H - 20) / 2, 2, 2);
+    }
+    ctx.restore();
+  }
+
   function drawBarkeep() {
     if (!S) return;
     var y = laneCenterY(S.selected);
@@ -575,10 +656,21 @@
   }
 
   function drawPatron(p, y) {
-    var glow = p.state === "exit" ? 0.35 : 0.7;
+    var nearCounter = p.state === "walk" && p.x <= BAR_X + WARN_ZONE;
+    // warning glow as a patron closes in on the counter — mirrors the catch-zone pulse the
+    // returning empties already get, so a life-losing miss is telegraphed, not a surprise.
+    if (nearCounter) {
+      ctx.save();
+      var urgency = 1 - clamp((p.x - BAR_X) / WARN_ZONE, 0, 1);
+      ctx.globalAlpha = (0.25 + 0.35 * urgency) * (0.6 + 0.4 * Math.sin(tPulse * (8 + urgency * 10)));
+      ctx.strokeStyle = "#ff2fb9"; ctx.lineWidth = 2;
+      ctx.strokeRect(BAR_X - 2, y - LANE_H / 2 + 4, WARN_ZONE, LANE_H - 8);
+      ctx.restore();
+    }
+    var glow = p.state === "exit" ? 0.35 : (nearCounter ? 0.7 + 0.5 * (1 - clamp((p.x - BAR_X) / WARN_ZONE, 0, 1)) : 0.7);
     ctx.save();
-    ctx.shadowColor = "#20e6ff"; ctx.shadowBlur = 10 * glow;
-    ctx.fillStyle = p.state === "exit" ? "rgba(32,230,255,.45)" : "#7ef3ff";
+    ctx.shadowColor = nearCounter ? "#ff2fb9" : "#20e6ff"; ctx.shadowBlur = 10 * glow;
+    ctx.fillStyle = p.state === "exit" ? "rgba(32,230,255,.45)" : (nearCounter ? "#ffd0ef" : "#7ef3ff");
     // head
     ctx.beginPath(); ctx.arc(p.x, y - 16, 7, 0, Math.PI * 2); ctx.fill();
     // body (triangle silhouette)
@@ -615,14 +707,31 @@
   function draw() {
     ctx.save();
     if (shake > 0) {
-      var mag = shake * 6;
+      var mag = shake * 9;
       ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
     }
-    drawBackdrop();
+    drawBackdrop(S && S.level);
     if (S) {
+      var range = S.laneRange || { lo: 0, hi: LANES - 1 };
       for (var i = 0; i < LANES; i++) {
         var y = laneCenterY(i);
         var lane = S.lanes[i];
+        var closed = i < range.lo || i > range.hi;
+        if (closed) {
+          // dim + label a lane the onboarding ramp hasn't opened yet, so its emptiness
+          // reads as "not open" rather than "broken"
+          ctx.save();
+          ctx.globalAlpha = 0.35;
+          ctx.fillStyle = "#050213";
+          ctx.fillRect(BAR_X, TOP_MARGIN + i * LANE_H, W - BAR_X, LANE_H);
+          ctx.globalAlpha = 0.5;
+          ctx.textAlign = "center"; ctx.font = "bold 11px Chakra Petch, monospace";
+          ctx.fillStyle = "#8f86c9";
+          ctx.fillText("CLOSED", (BAR_X + W) / 2, y + 4);
+          ctx.restore();
+          continue;
+        }
+        drawLaneAmbient(y, i);
         for (var j = 0; j < lane.orders.length; j++) drawOrder(lane.orders[j], y);
         for (var k = 0; k < lane.patrons.length; k++) drawPatron(lane.patrons[k], y);
         if (i === S.selected) {
@@ -639,7 +748,7 @@
     for (var p = 0; p < particles.length; p++) {
       var pt = particles[p];
       ctx.save();
-      ctx.globalAlpha = Math.max(0, pt.t);
+      ctx.globalAlpha = clamp(pt.t / (pt.life || 1), 0, 1);
       ctx.fillStyle = pt.color;
       ctx.fillRect(pt.x - pt.s / 2, pt.y - pt.s / 2, pt.s, pt.s);
       ctx.restore();
@@ -653,6 +762,17 @@
       ctx.shadowColor = "#ffd23f"; ctx.shadowBlur = 16;
       ctx.fillStyle = "#fff8dc";
       ctx.fillText("RUSH CLEARED · TIP EARNED", W / 2, H / 2);
+      ctx.restore();
+    }
+    // combo milestone callout (fix #2: make a growing combo actually read as a payoff)
+    if (S && S.comboFlashT > 0 && S.mode === "play") {
+      ctx.save();
+      var flash = clamp(S.comboFlashT / 0.9, 0, 1);
+      ctx.globalAlpha = flash;
+      ctx.textAlign = "center"; ctx.font = "bold " + (24 + Math.round(6 * flash)) + "px Chakra Petch, monospace";
+      ctx.shadowColor = "#ffd23f"; ctx.shadowBlur = 18 * flash;
+      ctx.fillStyle = "#ffd23f";
+      ctx.fillText("COMBO x" + S.comboFlashN + "!", W / 2, H / 2 - 60);
       ctx.restore();
     }
   }

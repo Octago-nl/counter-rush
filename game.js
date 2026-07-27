@@ -225,27 +225,36 @@
     } catch (e) { deck = null; }
   })();
 
-  /* ---- keyboard fallback (only wired if the deck failed to load — never double-fires) ----- */
+  /* ---- keyboard fallback (only wired if the deck failed to load — never double-fires) -----
+   * Lane keys use a held-boolean (fallbackHeld) instead of leaning on OS auto-repeat timing:
+   * the first (non-repeat) keydown fires the immediate step, then the shared updateLaneHold()
+   * ticker (driven off real elapsed dt inside loop(), below) auto-repeats while the key stays
+   * down — this mirrors exactly what the deck's own held state already gives deck users.
+   * SERVE/CATCH stay strictly edge-triggered (guarded by e.repeat) — one action per press.
+   */
   var pendingServe = false, pendingCatch = false;
+  var fallbackHeld = { up: false, down: false };
   if (!deck) {
     addEventListener("keydown", function (e) {
-      if (e.repeat) return;
-      if (e.code === "ArrowUp" || e.code === "KeyW") { laneMove(-1); Sound.play("lane"); }
-      else if (e.code === "ArrowDown" || e.code === "KeyS") { laneMove(1); Sound.play("lane"); }
-      else if (e.code === "Space" || e.code === "KeyZ") { pendingServe = true; }
-      else if (e.code === "KeyX" || e.code === "Enter") { pendingCatch = true; }
+      if (e.code === "ArrowUp" || e.code === "KeyW") {
+        if (!fallbackHeld.up) { fallbackHeld.up = true; laneMove(-1); Sound.play("lane"); }
+      } else if (e.code === "ArrowDown" || e.code === "KeyS") {
+        if (!fallbackHeld.down) { fallbackHeld.down = true; laneMove(1); Sound.play("lane"); }
+      } else if (!e.repeat && (e.code === "Space" || e.code === "KeyZ")) { pendingServe = true; }
+      else if (!e.repeat && (e.code === "KeyX" || e.code === "Enter")) { pendingCatch = true; }
+    });
+    addEventListener("keyup", function (e) {
+      if (e.code === "ArrowUp" || e.code === "KeyW") fallbackHeld.up = false;
+      else if (e.code === "ArrowDown" || e.code === "KeyS") fallbackHeld.down = false;
     });
   }
 
-  /* ---- touch fallback (canvas tap zones + makeshift buttons, only if the deck failed) ----- */
+  /* ---- touch fallback (makeshift SERVE/CATCH buttons, only if the deck failed) -------------
+   * Lane selection on a canvas tap is handled by a single, unconditional listener further
+   * below ("canvas tap-to-select-lane") that works whether or not the deck mounted.
+   */
   var fallbackBar = null;
   if (!deck) {
-    canvas.addEventListener("pointerdown", function (e) {
-      var r = canvas.getBoundingClientRect();
-      var y = (e.clientY - r.top) / r.height * H;
-      if (y < H / 2) laneMove(-1); else laneMove(1);
-      Sound.play("lane");
-    });
     fallbackBar = document.createElement("div");
     fallbackBar.style.cssText = "display:flex;gap:10px;justify-content:center;margin-top:6px";
     var b1 = document.createElement("button"), b2 = document.createElement("button");
@@ -262,6 +271,53 @@
     if (!S || S.mode !== "play") return;
     var r = S.laneRange || { lo: 0, hi: LANES - 1 };
     S.selected = clamp(S.selected + delta, r.lo, r.hi);
+  }
+
+  // Direct lane select (fix #2): jump straight to any lane in one action instead of stepping
+  // one lane per press. Shared by the number-key (1-4) and canvas-tap entry points below.
+  // Clamped to the onboarding-gated open range (S.laneRange) exactly like laneMove().
+  function selectLane(idx) {
+    if (!S || S.mode !== "play") return;
+    var r = S.laneRange || { lo: 0, hi: LANES - 1 };
+    var target = clamp(idx, r.lo, r.hi);
+    if (target === S.selected) return;
+    S.selected = target;
+    Sound.play("lane");
+  }
+
+  // Number keys 1-4 -> lanes 0-3 directly. Wired unconditionally (deck present or not): the
+  // deck only ever binds ArrowUp/W, ArrowDown/S, Space/KeyZ, KeyX/Enter, so digit keys never
+  // collide with it.
+  var DIGIT_LANE = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Numpad1: 0, Numpad2: 1, Numpad3: 2, Numpad4: 3 };
+  addEventListener("keydown", function (e) {
+    if (DIGIT_LANE.hasOwnProperty(e.code)) selectLane(DIGIT_LANE[e.code]);
+  });
+
+  // Canvas tap-to-select-lane (fix #2): works whether or not the deck mounted. Unambiguous —
+  // SERVE/CATCH only ever live on the deck's own buttons (or the fallback button bar above),
+  // never on the canvas itself, so a canvas pointerdown here can never double-fire serve/catch.
+  canvas.addEventListener("pointerdown", function (e) {
+    var r = canvas.getBoundingClientRect();
+    var y = (e.clientY - r.top) / r.height * H;
+    selectLane(Math.floor((y - TOP_MARGIN) / LANE_H));
+  });
+
+  /* ---- lane hold-to-scroll (auto-repeat) state ---------------------------------------------
+   * Fixes edge-triggered-only lane movement: the immediate first step still comes from
+   * justPressed (deck) or a fresh keydown (fallback, above) for an unchanged "tap" feel, but
+   * as long as the direction stays HELD this now auto-repeats laneMove() off real elapsed dt
+   * instead of requiring a fresh press per lane. The timer resets whenever the held direction
+   * changes or releases, so reversing direction never inherits a stale countdown.
+   */
+  var LANE_REPEAT_DELAY = 0.22;  // s before auto-repeat kicks in after the initial step
+  var LANE_REPEAT_RATE = 0.10;   // s between repeats once auto-repeat has kicked in
+  var laneRepeat = { dir: 0, t: 0 };
+  function updateLaneHold(dt, upHeld, downHeld) {
+    var dir = upHeld && !downHeld ? -1 : (downHeld && !upHeld ? 1 : 0);
+    if (dir !== laneRepeat.dir) { laneRepeat.dir = dir; laneRepeat.t = LANE_REPEAT_DELAY; return; }
+    if (dir === 0) return;
+    laneRepeat.t -= dt;
+    if (laneRepeat.t <= 0) { laneMove(dir); Sound.play("lane"); laneRepeat.t = LANE_REPEAT_RATE; }
   }
 
   /* ---- state ------------------------------------------------------------------------------ */
@@ -308,6 +364,7 @@
       slowmo: 0, clearT: 0, comboFlashT: 0, comboFlashN: 0,
       startTs: Date.now(), last: performance.now(), __injectErr: false
     };
+    laneRepeat.dir = 0; laneRepeat.t = 0;  // fresh shift never inherits a stale hold-repeat countdown
     els.overlay.classList.add("hide");
     els.shareWrap.style.display = "none";
     Sound.play("start");
@@ -791,14 +848,21 @@
       // input
       if (deck) {
         var st = deck.state();
-        if (st.lanepad && st.lanepad.justPressed) {
-          if (st.lanepad.justPressed.up) laneMove(-1);
-          if (st.lanepad.justPressed.down) laneMove(1);
+        if (st.lanepad) {
+          if (st.lanepad.justPressed) {
+            if (st.lanepad.justPressed.up) { laneMove(-1); Sound.play("lane"); }
+            if (st.lanepad.justPressed.down) { laneMove(1); Sound.play("lane"); }
+          }
+          // hold-to-scroll: st.lanepad.up/down stay true for the FULL hold (d-pad OR keyboard —
+          // the deck routes keyboard into this same held state), unlike justPressed above which
+          // only fires once on the initial edge. See updateLaneHold() for the repeat timing.
+          updateLaneHold(dt, st.lanepad.up, st.lanepad.down);
         }
         if (st.serve && st.serve.justPressed) onServeBtn();
         if (st["catch"] && st["catch"].justPressed) onCatchBtn();
         deck.frameEnd();
       } else {
+        updateLaneHold(dt, fallbackHeld.up, fallbackHeld.down);
         if (pendingServe) { pendingServe = false; onServeBtn(); }
         if (pendingCatch) { pendingCatch = false; onCatchBtn(); }
       }
@@ -859,6 +923,8 @@
       serve: function () { onServeBtn(); },
       catchNow: function () { onCatchBtn(); },
       laneMove: function (d) { laneMove(d); },
+      selectLane: function (idx) { selectLane(idx); },
+      selectedLane: function () { return S ? S.selected : null; },
       forceRushClear: function () { if (S) { S.rushServed = S.rushTarget; } },
       forceMiss: function () { if (S) missCatch(S.selected, { x: BAR_X }); }
     };
